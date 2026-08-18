@@ -29,8 +29,11 @@ async def handle_message(
             await nack()
             return
 
-    await redis_client.cache_status(request_id, status.value, settings.status_cache_ttl_seconds)
-    await redis_client.publish_status(request_id, status.value)
+    try:
+        await redis_client.cache_status(request_id, status.value, settings.status_cache_ttl_seconds)
+        await redis_client.publish_status(request_id, status.value)
+    except Exception:
+        pass
     await ack()
 
 

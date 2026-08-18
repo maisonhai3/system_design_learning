@@ -58,6 +58,29 @@ async def test_handle_message_nacks_when_request_missing(monkeypatch):
     ack.assert_not_called()
 
 
+async def test_handle_message_acks_when_redis_fails_after_db_commit(monkeypatch):
+    request_id = uuid.uuid4()
+    session = AsyncMock()
+    fake_request = MagicMock(student_id=1, course_id=2)
+
+    monkeypatch.setattr(worker.db, "get_enrollment_request", AsyncMock(return_value=fake_request))
+    monkeypatch.setattr(worker.db, "try_enroll_student", AsyncMock(return_value=RequestStatus.COMPLETED))
+    monkeypatch.setattr(worker.db, "mark_request_status", AsyncMock())
+    monkeypatch.setattr(worker.redis_client, "cache_status", AsyncMock())
+    monkeypatch.setattr(
+        worker.redis_client, "publish_status", AsyncMock(side_effect=ConnectionError("redis is down"))
+    )
+
+    ack = AsyncMock()
+    nack = AsyncMock()
+
+    await worker.handle_message(_fake_session_factory(session), request_id, ack, nack)
+
+    session.commit.assert_called_once()
+    ack.assert_called_once()
+    nack.assert_not_called()
+
+
 async def test_handle_message_rolls_back_and_nacks_on_error(monkeypatch):
     request_id = uuid.uuid4()
     session = AsyncMock()

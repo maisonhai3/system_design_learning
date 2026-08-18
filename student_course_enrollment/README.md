@@ -17,6 +17,21 @@ Then:
 
 RabbitMQ management UI: http://localhost:15672 (guest/guest)
 
+Note: `worker` and `outbox-relay` will exit immediately with
+`NotImplementedError` until their respective stubs are implemented —
+that's expected, not a bug.
+
+## Seeding test data
+
+There's no API for creating students/courses (out of scope for this scaffold). Insert them directly:
+
+    docker compose exec postgres psql -U enrollment -d enrollment -c \
+      "INSERT INTO students (id, name, email) VALUES (1, 'Ada Lovelace', 'ada@example.com');"
+    docker compose exec postgres psql -U enrollment -d enrollment -c \
+      "INSERT INTO courses (id, name, capacity) VALUES (1, 'Intro to Systems Design', 1);"
+
+A capacity of 1 lets you demonstrate both the success path and the `rejected_full` path (enroll a second student against the same course).
+
 ## What's implemented vs. what you need to write
 
 Everything is wired up and tested except the functions that actually talk

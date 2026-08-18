@@ -22,7 +22,7 @@ async def _subscribe_with_timeout(request_id: uuid.UUID) -> AsyncIterator[str]:
             status = await asyncio.wait_for(subscription.__anext__(), timeout=settings.redis_timeout_seconds)
         except StopAsyncIteration:
             return
-        except asyncio.TimeoutError as exc:
+        except (asyncio.TimeoutError, ConnectionError) as exc:
             raise RedisUnavailable from exc
         yield status
 
@@ -43,7 +43,7 @@ async def stream_events(request_id: uuid.UUID, session: AsyncSession) -> AsyncIt
         cached = await asyncio.wait_for(
             redis_client.get_cached_status(request_id), timeout=settings.redis_timeout_seconds
         )
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, ConnectionError):
         cached = None
 
     if cached is not None:
