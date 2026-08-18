@@ -1,9 +1,11 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db, mq, outbox
+from app.api.sse import stream_events
 from app.database import get_session
 from app.schemas import EnrollRequestIn, EnrollRequestOut, StatusOut
 
@@ -31,3 +33,12 @@ async def get_status(request_id: uuid.UUID, session: AsyncSession = Depends(get_
         raise HTTPException(status_code=404, detail="request not found")
 
     return StatusOut(request_id=req.id, student_id=req.student_id, course_id=req.course_id, status=req.status)
+
+
+@router.get("/enrollments/requests/{request_id}/stream")
+async def stream(request_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> StreamingResponse:
+    async def formatted_events():
+        async for status in stream_events(request_id, session):
+            yield f"data: {status}\n\n"
+
+    return StreamingResponse(formatted_events(), media_type="text/event-stream")
