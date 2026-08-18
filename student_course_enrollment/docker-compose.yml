@@ -48,6 +48,8 @@ services:
       SPOOL_DIR: /spool
     volumes:
       - ./app:/app/app
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
       - ./spool:/spool
     depends_on:
       postgres:
