@@ -7,7 +7,6 @@ COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
 COPY .env ./
-COPY tests ./tests
 
 RUN pip install --no-cache-dir ".[dev]"
 
