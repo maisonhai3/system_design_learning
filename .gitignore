@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Subagent-driven-development scratch workspace
+.superpowers/
+
+# student_course_enrollment local spool (runtime state, not source)
+student_course_enrollment/spool/*
+!student_course_enrollment/spool/.gitkeep
