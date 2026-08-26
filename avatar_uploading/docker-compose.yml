@@ -1,0 +1,67 @@
+name: avatar-uploading-lab
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: avatar_lab_pg
+    environment:
+      POSTGRES_USER: lab
+      POSTGRES_PASSWORD: lab
+      POSTGRES_DB: lab
+    ports:
+      # 5433, not 5432: this machine already runs a native PG cluster on 5432.
+      - "5433:5432"
+    command:
+      - postgres
+      # Deliberately mis-tuned for teaching, NOT for production:
+      #   max_connections is low enough that pgbench can exhaust it on a laptop,
+      #   deadlock_timeout is short so scenario 04 fails fast instead of hanging,
+      #   log_lock_waits makes a blocked transaction visible in `lab.sh logs`.
+      - "-c"
+      - "max_connections=50"
+      - "-c"
+      - "deadlock_timeout=500ms"
+      - "-c"
+      - "log_lock_waits=on"
+      - "-c"
+      - "log_line_prefix=%m [%p] %q%a "
+      - "-c"
+      - "log_min_duration_statement=-1"
+    volumes:
+      # Files here run once, in filename order, on first boot of an empty volume.
+      # `lab.sh reset` re-runs the same two files by hand for a fast reset.
+      - ./schema:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lab -d lab"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # Off by default, and the one UNVERIFIED thing in this lab: the image could
+  # not be pulled when this was built (no registry access), so `lab.sh pool up`
+  # has never actually run. It is here because pgbouncer is the production
+  # answer to connection exhaustion — but `lab.sh exhaust` does not need it and
+  # proves the same point with a client-side pool.
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.23.1-p2
+    container_name: avatar_lab_pgbouncer
+    profiles: ["pool"]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: lab
+      DB_PASSWORD: lab
+      DB_NAME: lab
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "1000"
+      DEFAULT_POOL_SIZE: "20"
+      ADMIN_USERS: lab
+      LISTEN_PORT: "6432"
+    ports:
+      - "6433:6432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes: {}
