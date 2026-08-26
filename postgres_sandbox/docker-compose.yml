@@ -1,0 +1,25 @@
+name: postgres-sandbox
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres_sandbox
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-sandbox}
+    ports:
+      # 5434 on the host: 5432 is this machine's native cluster and 5433 is the
+      # avatar_uploading lab. Container side stays 5432.
+      - "${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-sandbox}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
