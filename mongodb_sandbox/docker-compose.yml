@@ -1,0 +1,23 @@
+name: mongodb-sandbox
+
+services:
+  mongo:
+    image: mongo:8
+    container_name: mongodb_sandbox
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-root}
+    ports:
+      # 27017 is MongoDB's default and nothing else on this machine uses it.
+      - "${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  mongodata:
