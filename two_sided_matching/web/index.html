@@ -1,0 +1,248 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Two-Sided Matching Lab</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg:#0f1115; --panel:#171a21; --line:#262b36; --fg:#e6e8ec; --dim:#8b93a7;
+    --accent:#5eead4; --warn:#fbbf24; --bad:#f87171; --good:#4ade80;
+    --a2b:#60a5fa; --b2a:#c084fc;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f7f8fa; --panel:#fff; --line:#e3e6ec; --fg:#161922; --dim:#5f6878;
+            --accent:#0d9488; --a2b:#2563eb; --b2a:#7c3aed; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex;
+           align-items:baseline; gap:16px; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:-.01em; }
+  .muted { color:var(--dim); font-size:12px; }
+  .wrap { display:grid; grid-template-columns:300px 1fr; gap:0; min-height:calc(100vh - 52px); }
+  @media (max-width:900px){ .wrap{ grid-template-columns:1fr; } }
+  aside { border-right:1px solid var(--line); padding:14px; overflow:auto; max-height:calc(100vh - 52px); }
+  main { padding:18px 20px; overflow:auto; max-height:calc(100vh - 52px); }
+  .tabs { display:flex; gap:6px; margin-bottom:10px; }
+  .tabs button { flex:1; }
+  button, select, input {
+    background:var(--panel); color:var(--fg); border:1px solid var(--line);
+    border-radius:7px; padding:6px 9px; font:inherit; font-size:13px;
+  }
+  button { cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.on { background:var(--accent); color:#06231f; border-color:var(--accent); font-weight:600; }
+  input[type=search] { width:100%; margin-bottom:8px; }
+  .list { display:flex; flex-direction:column; gap:3px; }
+  .item { padding:7px 9px; border-radius:7px; cursor:pointer; border:1px solid transparent; }
+  .item:hover { background:var(--panel); }
+  .item.sel { background:var(--panel); border-color:var(--accent); }
+  .item b { font-weight:600; display:block; font-size:13px; }
+  .knobs { display:flex; gap:14px; flex-wrap:wrap; align-items:center;
+           padding:10px 12px; background:var(--panel); border:1px solid var(--line);
+           border-radius:9px; margin-bottom:14px; }
+  .knob { display:flex; flex-direction:column; gap:3px; }
+  .knob label { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; }
+  .subject { background:var(--panel); border:1px solid var(--line); border-radius:9px;
+             padding:12px 14px; margin-bottom:14px; }
+  .subject h2 { margin:0 0 3px; font-size:16px; }
+  .chips { display:flex; gap:5px; flex-wrap:wrap; margin-top:7px; }
+  .chip { font-size:11px; padding:2px 7px; border-radius:999px;
+          border:1px solid var(--line); color:var(--dim); }
+  .row { border:1px solid var(--line); border-radius:9px; padding:11px 13px;
+         margin-bottom:8px; background:var(--panel); }
+  .row-top { display:flex; align-items:baseline; gap:10px; }
+  .rank { color:var(--dim); font-variant-numeric:tabular-nums; min-width:26px; }
+  .title { font-weight:600; flex:1; }
+  .score { font-variant-numeric:tabular-nums; color:var(--accent); font-weight:650; }
+  .bars { display:flex; gap:12px; margin-top:7px; font-size:11px; align-items:center;
+          flex-wrap:wrap; }
+  .bar { height:5px; border-radius:3px; background:var(--line); width:96px; overflow:hidden; }
+  .bar i { display:block; height:100%; }
+  .reasons { margin-top:6px; font-size:12px; color:var(--warn); }
+  .blockers { margin-top:6px; font-size:12px; color:var(--bad); }
+  .stat { color:var(--dim); font-size:12px; margin-bottom:10px; font-variant-numeric:tabular-nums; }
+  a { color:var(--accent); }
+  .empty { padding:20px; color:var(--dim); }
+</style>
+
+<header>
+  <h1>Two-Sided Matching Lab</h1>
+  <span class="muted" id="stats">loading…</span>
+</header>
+
+<div class="wrap">
+  <aside>
+    <div class="tabs">
+      <button id="tab-c" class="on" onclick="setSide('candidates')">Candidates</button>
+      <button id="tab-j" onclick="setSide('jobs')">Jobs</button>
+    </div>
+    <input type="search" id="q" placeholder="filter…" oninput="loadList()">
+    <div class="list" id="list"></div>
+  </aside>
+
+  <main>
+    <div class="knobs">
+      <div class="knob"><label>scoring</label>
+        <select id="scoring" onchange="run()">
+          <option value="reciprocal">reciprocal</option>
+          <option value="cosine">cosine only</option>
+        </select></div>
+      <div class="knob"><label>filters</label>
+        <select id="filters" onchange="run()">
+          <option value="lenient">lenient</option>
+          <option value="strict">strict</option>
+          <option value="off">off</option>
+        </select></div>
+      <div class="knob"><label>retrieval</label>
+        <select id="retrieval" onchange="run()">
+          <option value="exact">exact</option>
+          <option value="hybrid">hybrid</option>
+          <option value="ann">ann</option>
+        </select></div>
+      <div class="knob"><label>congestion</label>
+        <select id="congestion" onchange="run()">
+          <option value="0">off</option><option value="1">1.0</option>
+          <option value="2">2.0</option><option value="4">4.0</option>
+        </select></div>
+      <div class="knob"><label>pool</label>
+        <select id="pool" onchange="run()">
+          <option>100</option><option selected>300</option><option>800</option>
+        </select></div>
+      <div class="knob"><label>rerank</label>
+        <button id="rerank" onclick="this.classList.toggle('on');run()">off</button></div>
+    </div>
+
+    <div id="subject"></div>
+    <div class="stat" id="meta"></div>
+    <div id="results"><div class="empty">Pick someone on the left.</div></div>
+  </main>
+</div>
+
+<script>
+let side = 'candidates', selected = null;
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const money = (lo, hi, cur) =>
+  lo && hi ? `${Math.round(lo/1000)}–${Math.round(hi/1000)}k ${cur||''}`
+  : hi ? `≤${Math.round(hi/1000)}k` : lo ? `≥${Math.round(lo/1000)}k` : '—';
+
+function setSide(s) {
+  side = s; selected = null;
+  document.getElementById('tab-c').classList.toggle('on', s === 'candidates');
+  document.getElementById('tab-j').classList.toggle('on', s === 'jobs');
+  document.getElementById('subject').innerHTML = '';
+  document.getElementById('meta').textContent = '';
+  document.getElementById('results').innerHTML =
+    '<div class="empty">Pick ' + (s === 'candidates' ? 'a candidate' : 'a job') + '.</div>';
+  loadList();
+}
+
+async function loadList() {
+  const q = encodeURIComponent(document.getElementById('q').value);
+  const rows = await (await fetch(`/api/${side}?q=${q}`)).json();
+  document.getElementById('list').innerHTML = rows.map(r => side === 'candidates'
+    ? `<div class="item" data-id="${r.id}" onclick="pick(${r.id})">
+         <b>${esc(r.name)}</b>
+         <span class="muted">${esc(r.focus||'')} · ${r.years??'?'}y · ${esc(r.country||'?')}${r.remote?' · remote':''}</span>
+       </div>`
+    : `<div class="item" data-id="${r.id}" onclick="pick(${r.id})">
+         <b>${esc(r.title)}</b>
+         <span class="muted">${esc(r.company||'')} · ${r.remote?'remote':esc(r.country||'?')}</span>
+       </div>`).join('');
+  if (selected) document.querySelector(`.item[data-id="${selected}"]`)?.classList.add('sel');
+}
+
+function pick(id) {
+  selected = id;
+  document.querySelectorAll('.item').forEach(e =>
+    e.classList.toggle('sel', e.dataset.id == id));
+  run();
+}
+
+async function run() {
+  if (!selected) return;
+  const p = new URLSearchParams({
+    scoring: document.getElementById('scoring').value,
+    filters: document.getElementById('filters').value,
+    retrieval: document.getElementById('retrieval').value,
+    congestion: document.getElementById('congestion').value,
+    pool: document.getElementById('pool').value,
+    rerank: document.getElementById('rerank').classList.contains('on'),
+    limit: 15,
+  });
+  document.getElementById('rerank').textContent =
+    document.getElementById('rerank').classList.contains('on') ? 'on' : 'off';
+
+  const dir = side === 'candidates' ? 'suggest-jobs' : 'suggest-candidates';
+  const d = await (await fetch(`/api/${dir}/${selected}?${p}`)).json();
+  const s = d.subject;
+
+  document.getElementById('subject').innerHTML = `
+    <div class="subject">
+      <h2>${esc(s.name)}</h2>
+      <div class="muted">${esc(s.headline||'')}</div>
+      <div class="chips">
+        ${s.years != null ? `<span class="chip">${s.years}y</span>` : ''}
+        ${s.country ? `<span class="chip">${esc(s.country)}</span>` : ''}
+        ${s.floor ? `<span class="chip">floor ${s.floor.toLocaleString()}</span>` : ''}
+        ${s.salary_max ? `<span class="chip">${money(s.salary_min, s.salary_max)}</span>` : ''}
+        ${s.remote ? '<span class="chip">remote</span>' : ''}
+        ${s.visa ? '<span class="chip">visa</span>' : ''}
+        ${(s.skills||[]).map(k => `<span class="chip">${esc(k)}</span>`).join('')}
+      </div>
+      ${s.url ? `<div style="margin-top:8px"><a href="${esc(s.url)}" target="_blank" rel="noopener">original posting ↗</a></div>` : ''}
+    </div>`;
+
+  document.getElementById('meta').textContent =
+    `pool ${d.pool} → eligible ${d.eligible} → shown ${d.matches.length}   ·   ` +
+    Object.entries(d.timings).map(([k,v]) => `${k} ${v}ms`).join('  ');
+
+  if (!d.matches.length) {
+    document.getElementById('results').innerHTML =
+      '<div class="empty">Nothing eligible. Try relaxing <b>filters</b>.</div>';
+    return;
+  }
+  if (d.empty_reason) {
+    document.getElementById('results').innerHTML =
+      '<div class="empty">Nothing eligible — here is what blocked the closest matches:</div>' +
+      d.matches.map(m => `<div class="row"><div class="row-top">
+        <span class="title">${esc(m.title)}</span></div>
+        <div class="blockers">✗ ${m.blockers.map(esc).join(' · ')}</div></div>`).join('');
+    return;
+  }
+
+  document.getElementById('results').innerHTML = d.matches.map((m, i) => `
+    <div class="row">
+      <div class="row-top">
+        <span class="rank">${i+1}.</span>
+        <span class="title">${esc(m.title)}</span>
+        <span class="score">${m.score.toFixed(3)}</span>
+      </div>
+      <div class="muted">${esc(m.subtitle)}${
+        m.salary_max||m.salary_min ? ' · ' + money(m.salary_min, m.salary_max, m.currency) : ''}${
+        m.remote ? ' · remote' : (m.country ? ' · ' + esc(m.country) : '')}${
+        m.years != null ? ' · ' + m.years + 'y ' + esc(m.seniority||'') : ''}${
+        m.url ? ` · <a href="${esc(m.url)}" target="_blank" rel="noopener">source ↗</a>` : ''}</div>
+      <div class="bars">
+        <span class="muted">cos ${m.sim.toFixed(3)}</span>
+        <span style="color:var(--a2b)">wants→</span>
+        <span class="bar"><i style="width:${Math.round(m.a2b*100)}%;background:var(--a2b)"></i></span>
+        <span class="muted">${m.a2b.toFixed(2)}</span>
+        <span style="color:var(--b2a)">←wanted</span>
+        <span class="bar"><i style="width:${Math.round(m.b2a*100)}%;background:var(--b2a)"></i></span>
+        <span class="muted">${m.b2a.toFixed(2)}</span>
+      </div>
+      ${m.reasons.length ? `<div class="reasons">${m.reasons.map(esc).join(' · ')}</div>` : ''}
+    </div>`).join('');
+}
+
+(async () => {
+  const s = await (await fetch('/api/stats')).json();
+  document.getElementById('stats').textContent =
+    `${s.counts.jobs} jobs · ${s.counts.candidates} candidates · ${s.model} · ` +
+    `salary stated on ${s.coverage.salary_max}% of jobs`;
+})();
+loadList();
+</script>

@@ -1,0 +1,42 @@
+name: two-sided-matching
+
+services:
+  postgres:
+    # pgvector's own image, not postgres:16 -- the extension is compiled in.
+    # Installing pgvector into the stock image at runtime is possible and is a
+    # waste of everyone's morning.
+    image: pgvector/pgvector:pg16
+    container_name: two_sided_pg
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lab}
+      POSTGRES_DB: ${POSTGRES_DB:-lab}
+    ports:
+      # 5435 on the host. 5432 is the machine's native cluster, 5433 is the
+      # avatar_uploading lab, 5434 is postgres_sandbox. Container side is 5432.
+      - "${POSTGRES_PORT:-5435}:5432"
+    command:
+      - postgres
+      # Index builds for HNSW are memory-hungry and fall back to a much slower
+      # path when maintenance_work_mem is small -- scenarios/07 builds one and
+      # you would otherwise be timing the fallback.
+      - "-c"
+      - "maintenance_work_mem=512MB"
+      - "-c"
+      - "shared_buffers=256MB"
+      # So EXPLAIN ANALYZE in the scenarios reports something honest about I/O.
+      - "-c"
+      - "effective_cache_size=1GB"
+      - "-c"
+      - "track_io_timing=on"
+    volumes:
+      - ./schema:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lab} -d ${POSTGRES_DB:-lab}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:
