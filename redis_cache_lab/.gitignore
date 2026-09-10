@@ -1,0 +1,6 @@
+# Local overrides for compose (ports, credentials).
+.env
+
+# uv writes nothing here by default; belt and braces.
+.venv/
+__pycache__/
