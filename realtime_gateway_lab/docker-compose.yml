@@ -1,0 +1,144 @@
+name: realtime-gateway-lab
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: rtgw_redis
+    ports:
+      # 6381: 6379 and 6380 belong to other labs in this repo.
+      - "${REDIS_PORT:-6381}:6379"
+    command:
+      - redis-server
+      - "--appendonly"
+      - "no"
+      - "--save"
+      - ""
+      # Streams are memory. A stream with no MAXLEN grows until this number
+      # stops it, and then `allkeys-lru` starts deleting other people's data to
+      # make room. Small on purpose so scenario 01 can reach it.
+      - "--maxmemory"
+      - "128mb"
+      - "--maxmemory-policy"
+      - "noeviction"
+      - "--notify-keyspace-events"
+      - "KEA"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  postgres:
+    image: postgres:16
+    container_name: rtgw_pg
+    environment:
+      POSTGRES_USER: lab
+      POSTGRES_PASSWORD: lab
+      POSTGRES_DB: lab
+    ports:
+      - "${POSTGRES_PORT:-5437}:5432"
+    command:
+      - postgres
+      # Small on purpose. Scenario 06 is about a long-lived connection holding
+      # a pooled resource, and that is only visible when the pool can be
+      # exhausted by a number of clients you can start by hand.
+      - "-c"
+      - "max_connections=30"
+      - "-c"
+      - "log_min_duration_statement=0"
+      - "-c"
+      - "log_line_prefix=%m [%p] %q%a "
+    volumes:
+      - ./schema:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lab -d lab"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    container_name: rtgw_api
+    environment:
+      LAB_ASYNC_DSN: postgresql+asyncpg://lab:lab@postgres:5432/lab
+      LAB_REDIS_URL: redis://redis:6379/0
+      # The posture this service takes on "who is asking". Scenario 03 walks
+      # all three: client | gateway | signed.
+      LAB_SUBJECT_TRUST: "${LAB_SUBJECT_TRUST:-gateway}"
+      LAB_GATEWAY_SECRET: "${LAB_GATEWAY_SECRET:-dev-gateway-secret}"
+    ports:
+      # PUBLISHED ON PURPOSE, and it is a bug you are meant to exploit.
+      #
+      # In production this port would not be published and the service would sit
+      # on an internal network. It is here so scenario 03 can demonstrate what
+      # "the gateway enforces authorization" is worth when the upstream is
+      # reachable without going through it — which, inside a cluster, it very
+      # often is.
+      - "${API_DIRECT_PORT:-8093}:8000"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  # The same image and the same code as `api`, with ONE environment variable
+  # different. Both are running at once so scenario 03 can compare them without
+  # restarting anything — the difference between "correct" and "wide open" is
+  # meant to be one line you can point at.
+  api-signed:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    container_name: rtgw_api_signed
+    environment:
+      LAB_ASYNC_DSN: postgresql+asyncpg://lab:lab@postgres:5432/lab
+      LAB_REDIS_URL: redis://redis:6379/0
+      LAB_SUBJECT_TRUST: "signed"
+      LAB_GATEWAY_SECRET: "${LAB_GATEWAY_SECRET:-dev-gateway-secret}"
+    ports:
+      - "${API_SIGNED_PORT:-8096}:8000"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  authz:
+    build:
+      context: .
+      dockerfile: gateway/authz/Dockerfile
+    container_name: rtgw_authz
+    environment:
+      LAB_REDIS_URL: redis://redis:6379/0
+      LAB_JWT_SECRET: "${LAB_JWT_SECRET:-dev-jwt-secret}"
+      LAB_GATEWAY_SECRET: "${LAB_GATEWAY_SECRET:-dev-gateway-secret}"
+      LAB_DECISION_TTL: "${LAB_DECISION_TTL:-30}"
+    ports:
+      # Published so you can call /auth by hand and see what the gateway sees.
+      - "${AUTHZ_PORT:-8094}:8000"
+    depends_on:
+      redis: {condition: service_healthy}
+
+  traefik:
+    image: traefik:v3.3
+    container_name: rtgw_traefik
+    ports:
+      - "${GATEWAY_PORT:-8090}:8080"    # the front door
+      - "${DASHBOARD_PORT:-8091}:8081"  # the dashboard, no auth — lab only
+    volumes:
+      - ./gateway/traefik:/etc/traefik:ro
+    depends_on:
+      - api
+      - authz
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: rtgw_nginx
+    ports:
+      # A second gateway with two locations that differ only in buffering, so
+      # scenario 05 can measure time-to-first-event through each.
+      - "${NGINX_PORT:-8092}:8080"
+    volumes:
+      - ./gateway/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+
+volumes: {}
