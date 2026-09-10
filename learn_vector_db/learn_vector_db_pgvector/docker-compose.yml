@@ -1,0 +1,28 @@
+name: learn-vector-db-pgvector
+
+services:
+  postgres:
+    # A PostgreSQL image that already includes the pgvector extension.
+    image: pgvector/pgvector:pg16
+    container_name: learn_vector_db_pgvector_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-vector_lab}
+    ports:
+      # 5435 keeps this sandbox separate from the other Postgres labs in the repo.
+      - "${POSTGRES_PORT:-5435}:5432"
+    volumes:
+      # First boot only: the init scripts run in filename order against the empty DB.
+      - ./schema:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-vector_lab}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+
