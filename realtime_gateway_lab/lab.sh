@@ -12,12 +12,13 @@ NGINX_PORT="${NGINX_PORT:-8092}"
 API_DIRECT_PORT="${API_DIRECT_PORT:-8093}"
 API_SIGNED_PORT="${API_SIGNED_PORT:-8096}"
 AUTHZ_PORT="${AUTHZ_PORT:-8094}"
+INSIGHT_PORT="${INSIGHT_PORT:-8097}"
 
 DSN="${LAB_DSN:-postgresql://lab:lab@localhost:${POSTGRES_PORT}/lab}"
 RURL="${LAB_REDIS_URL:-redis://localhost:${REDIS_PORT}/0}"
 GW="http://localhost:${GATEWAY_PORT}"
 DIRECT="http://localhost:${API_DIRECT_PORT}"
-export LAB_DSN="$DSN" LAB_REDIS_URL="$RURL" GATEWAY_PORT NGINX_PORT API_DIRECT_PORT API_SIGNED_PORT AUTHZ_PORT
+export LAB_DSN="$DSN" LAB_REDIS_URL="$RURL" GATEWAY_PORT NGINX_PORT API_DIRECT_PORT API_SIGNED_PORT AUTHZ_PORT INSIGHT_PORT
 
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
@@ -51,6 +52,73 @@ wait_ready() {
     die "stack did not become ready in 120s. Check: ./lab.sh logs"
 }
 
+INSIGHT="http://localhost:${INSIGHT_PORT}"
+
+insight_setup() {
+    # Register this lab's Redis in the GUI, and get the consent screen out of
+    # the way, so the first thing you see is the keyspace rather than a form.
+    #
+    # Deliberately NON-FATAL: RedisInsight is a convenience and no scenario
+    # depends on it, so a failure here warns and moves on. A tool that makes
+    # `up` fail because an optional viewer did not start is a tool people stop
+    # using.
+    local i
+    for i in $(seq 1 45); do
+        curl -sf -o /dev/null --max-time 3 "$INSIGHT/api/settings" && break
+        sleep 1
+    done
+    if ! curl -sf -o /dev/null --max-time 3 "$INSIGHT/api/settings"; then
+        printf '\033[33m%s\033[0m\n' "RedisInsight did not answer on ${INSIGHT}; skipping its setup."
+        return 0
+    fi
+
+    # eula: required. analytics: DECLINED on purpose — this is a tool pointed at
+    # a database, and its telemetry default is not a decision to make by
+    # accident. The same reasoning as any dependency you add to a service.
+    curl -sS -o /dev/null --max-time 5 -X PATCH "$INSIGHT/api/settings" \
+        -H 'Content-Type: application/json' \
+        -d '{"agreements":{"eula":true,"analytics":false,"notifications":false,"encryption":false}}' || true
+
+    python3 - "$INSIGHT" gateway/redisinsight/databases.json <<'PYEOF' || true
+import json, sys, urllib.request
+
+base, path = sys.argv[1], sys.argv[2]
+
+
+def api(method, endpoint, payload=None):
+    data = json.dumps(payload).encode() if payload is not None else None
+    request = urllib.request.Request(
+        f"{base}{endpoint}", data=data, method=method,
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        body = response.read().decode()
+    return json.loads(body) if body else None
+
+
+wanted = json.load(open(path))
+
+# Match on (host, port, db), not on name: the name is what you see in the GUI
+# and therefore the one field a user might change, while the triple is what
+# actually identifies the connection. Matching on the mutable field is how an
+# idempotent step turns into a duplicate-creating one.
+def identity(db):
+    return (db.get("host"), int(db.get("port", 6379)), int(db.get("db") or 0))
+
+
+existing = {identity(db) for db in api("GET", "/api/databases") or []}
+for db in wanted:
+    if identity(db) in existing:
+        print(f"  RedisInsight: {db['host']}:{db['port']} already registered")
+        continue
+    api("POST", "/api/databases", {
+        "name": db["name"], "host": db["host"],
+        "port": db["port"], "db": db.get("db", 0),
+    })
+    print(f"  RedisInsight: registered {db['name']} -> {db['host']}:{db['port']}")
+PYEOF
+}
+
 usage() {
 cat <<EOF
 Realtime Gateway Lab
@@ -77,6 +145,7 @@ Realtime Gateway Lab
   ./lab.sh cli [args...]      redis-cli against the lab
   ./lab.sh psql [args...]     psql against the lab
   ./lab.sh dashboard          print the Traefik dashboard URL
+  ./lab.sh insight            print the RedisInsight URL (and re-register the DB)
 
 Endpoints:
   gateway    $GW            (Traefik: auth enforced here)
@@ -85,6 +154,7 @@ Endpoints:
   service    $DIRECT        (trusts gateway headers — published ON PURPOSE, scenario 03)
   service    http://localhost:${API_SIGNED_PORT}        (same code, requires a SIGNED assertion)
   authz      http://localhost:${AUTHZ_PORT}/auth
+  insight    ${INSIGHT}                    (RedisInsight: browse the streams)
 EOF
 }
 
@@ -106,10 +176,12 @@ up)
         docker compose up -d --build
     fi
     wait_ready
+    insight_setup
     bold "Ready."
     echo "  gateway    $GW"
     echo "  dashboard  http://localhost:${DASHBOARD_PORT}/dashboard/"
     echo "  service    $DIRECT   (bypasses the gateway — that is scenario 03)"
+    echo "  insight    $INSIGHT   (streams, key tree, profiler)"
     echo
     echo "  ./lab.sh as alice /whoami"
     echo "  ./lab.sh list"
@@ -262,6 +334,25 @@ psql) need_psql; exec psql "$DSN" "$@" ;;
 
 dashboard)
     echo "http://localhost:${DASHBOARD_PORT}/dashboard/"
+    ;;
+
+insight)
+    insight_setup
+    bold "$INSIGHT"
+    cat <<EOF
+  Worth opening, in this order:
+    Browser              the key tree. ":" is rendered as a folder separator,
+                         so feed:v1:stream:user:1 is a path you can navigate —
+                         which is the payoff of the naming convention.
+    a stream key         entries with their ids, which are also the SSE
+                         cursors. Publish with './lab.sh publish 11' and watch
+                         one mailbox grow and another not.
+    Workbench            XINFO STREAM, XRANGE, XLEN by hand, with completion.
+    Analysis Tools       memory by key pattern — how much RAM your fan-out
+                         actually costs (scenario 02).
+    Profiler             this is MONITOR. It costs real throughput; never
+                         leave it running against production.
+EOF
     ;;
 
 help|--help|-h) usage ;;

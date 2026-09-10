@@ -23,6 +23,14 @@ either stops being true.
 ./lab.sh run-all             # every proof; non-zero if any claim stops holding
 ```
 
+Or look at it instead of reading it — RedisInsight is wired up and pointed at
+the lab's Redis, no connection form to fill in:
+
+```bash
+./lab.sh insight             # prints the URL and what's worth opening
+open http://localhost:8097
+```
+
 Watch a feed in one terminal and push into it from another:
 
 ```bash
@@ -55,6 +63,7 @@ Every number above was measured by the runners on the machine that built this.
         :8092  nginx ──auth_request──────┘             two locations: /buffered/ /streamed/
         :8091  Traefik dashboard
                               api-signed  :8096        same image, requires a signed assertion
+        :8097  RedisInsight ─────────────▶ redis       the streams, as a browsable tree
 ```
 
 Six containers, one command. The two gateways run the **same pattern in two
@@ -70,6 +79,7 @@ either one.
 | 8093 | the API, directly | **published on purpose**: scenario 03 is about what that costs |
 | 8094 | the authz service | call `/auth` by hand and see what the gateway sees |
 | 8096 | the API in `signed` mode | same code, one env var — scenario 03's fix |
+| 8097 | RedisInsight | browse the streams, the key tree, memory by pattern |
 
 ## Play with it
 
@@ -86,7 +96,44 @@ either one.
 ./lab.sh revoke-token <jti>             # denylist one token
 ./lab.sh streams                        # whose mailbox holds what
 ./lab.sh status                         # streams, decision cache, TTLs
+./lab.sh insight                        # the GUI, with the connection registered
 ```
+
+## Seeing it: RedisInsight
+
+`./lab.sh up` starts RedisInsight on **:8097**, registers this lab's Redis
+through its REST API, and accepts its terms — so the first thing you see is the
+keyspace, not a connection form.
+
+It earns its place here for one reason: **a stream is the Redis type that is
+genuinely hard to reason about from `redis-cli`.** You are reading a log whose
+entry ids are also cursors, and the interesting question is usually *what is in
+whose mailbox* — a shape, not a value.
+
+| open this | to see |
+|---|---|
+| **Browser** → key tree | `:` is rendered as a folder separator, so `feed:v1:stream:user:1` is a path you navigate. This is the concrete payoff of the naming convention from `redis_cache_lab`'s scenario 04, and much easier to believe once you have seen the tree. |
+| a stream key | entries with their ids — the same ids the SSE `id:` line carries. Run `./lab.sh publish 11` and watch **one** mailbox grow while another does not. That is scenario 02, visually. |
+| **Workbench** | `XINFO STREAM`, `XRANGE`, `XLEN` by hand, with completion and docs inline. The fastest way to learn the stream commands. |
+| **Analysis Tools** | memory by key pattern — what your fan-out actually costs in RAM (scenario 02's amplification, on your own machine). |
+| **Profiler** | this is `MONITOR`. It costs real throughput and must never be left running against production. |
+
+Two things worth noticing, because they are the same lessons the lab teaches:
+
+- **It is another container inside the trust boundary.** Port 8097 has no auth
+  and full read/write access to Redis. That is fine in a lab and is exactly the
+  shape of scenario 03: a component that can reach your datastore directly does
+  not care what your gateway thinks.
+- **Analytics are declined,** not merely unconfigured. `insight_setup` in
+  `lab.sh` posts `analytics: false` on purpose: this is a tool pointed at a
+  database, and its telemetry default is not a decision to make by accident.
+
+`gateway/redisinsight/databases.json` is the connection list — add an entry and
+`./lab.sh insight` registers it. The image also advertises
+`RI_PRE_SETUP_DATABASES_PATH` and `RI_REDIS_HOST` for this; on a fresh volume
+neither registered anything within four minutes of testing, so the lab does it
+through the API instead rather than layering an explicit mechanism on top of an
+unpredictable one. The compose file says so where you would look for it.
 
 ## Layout
 
@@ -192,3 +239,10 @@ dependencies via inline script metadata, so there is no virtualenv to manage.
 **Verified.** Every scenario, `./lab.sh run-all` (36/36 claims), and the gateway
 end to end with `traefik:v3.3`, `nginx:1.27-alpine`, `redis:7-alpine` and
 `postgres:16`. The measured numbers above came from those runs.
+
+RedisInsight was verified from a cold start as far as a headless machine can go:
+the container serves, the connection registers and re-registers idempotently,
+`GET /api/databases/{id}/connect` returns 200, and browsing the keyspace through
+its own API returns this lab's streams and the gateway's decision-cache keys. The
+one thing not verified here is how the pages look, because nothing in this
+environment can open a browser.

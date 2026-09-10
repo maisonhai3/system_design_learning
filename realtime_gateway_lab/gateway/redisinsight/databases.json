@@ -1,0 +1,9 @@
+[
+  {
+    "id": "realtime-gateway-lab",
+    "name": "realtime-gateway-lab",
+    "host": "redis",
+    "port": 6379,
+    "db": 0
+  }
+]
