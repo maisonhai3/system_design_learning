@@ -1,0 +1,70 @@
+name: redis-cache-lab
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis_cache_lab_redis
+    ports:
+      # 6380, not 6379: other labs in this repo already bind 6379.
+      - "${REDIS_PORT:-6380}:6379"
+    command:
+      - redis-server
+      # Deliberately mis-tuned for teaching, NOT for production:
+      #
+      #   maxmemory is small so scenario 07 can actually fill it and watch
+      #     things get evicted, instead of needing gigabytes of junk keys.
+      #   allkeys-lru is the policy most teams pick by reflex — scenario 07
+      #     shows why that choice silently breaks a *correctness* cache.
+      #   notify-keyspace-events lets you `redis-cli psubscribe '__key*@0__:*'`
+      #     in a second terminal and watch every SET/DEL/EXPIRE land.
+      #   latency-monitor-threshold records any command over 10ms, which is how
+      #     scenario 07 proves KEYS blocks the whole server.
+      - "--maxmemory"
+      - "64mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+      - "--notify-keyspace-events"
+      - "KEA"
+      - "--latency-monitor-threshold"
+      - "10"
+      - "--appendonly"
+      - "no"
+      - "--save"
+      - ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  postgres:
+    image: postgres:16
+    container_name: redis_cache_lab_pg
+    environment:
+      POSTGRES_USER: lab
+      POSTGRES_PASSWORD: lab
+      POSTGRES_DB: lab
+    ports:
+      # 5436: 5432 is the native cluster, 5433/5434/5435 belong to the other labs.
+      - "${POSTGRES_PORT:-5436}:5432"
+    command:
+      - postgres
+      # A cache only matters when the source of truth is slow or contended.
+      # log_min_duration_statement=0 logs EVERY query, so `./lab.sh dblog` is a
+      # literal count of how many reads your cache failed to absorb. That count
+      # is the whole point of scenario 06.
+      - "-c"
+      - "log_min_duration_statement=0"
+      - "-c"
+      - "log_line_prefix=%m [%p] %q%a "
+      - "-c"
+      - "max_connections=100"
+    volumes:
+      - ./schema:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lab -d lab"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes: {}
