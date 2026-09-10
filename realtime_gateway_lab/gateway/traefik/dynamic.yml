@@ -1,0 +1,87 @@
+# Dynamic configuration: routers, middlewares, services. Hot-reloaded.
+
+http:
+  routers:
+    # Every route names the same authz middleware. That repetition is the
+    # point: a route that forgets it is a route with no authentication, so it
+    # should be visible in a diff rather than inherited invisibly.
+    api-public:
+      rule: "PathPrefix(`/healthz`)"
+      service: api
+      entryPoints: [web]
+      middlewares: [strip-client-auth]
+
+    api-feed:
+      rule: "PathPrefix(`/feed`)"
+      service: api
+      entryPoints: [web]
+      # Order matters and is not obvious: strip-client-auth runs FIRST, so the
+      # forward-auth response headers are written onto a request that no longer
+      # carries the client's forgeries. Reverse these two and a header the
+      # authz service does not happen to set stays exactly as the client sent it.
+      middlewares: [strip-client-auth, authz, sse-headers]
+
+    api-protected:
+      rule: "PathPrefix(`/`)"
+      service: api
+      entryPoints: [web]
+      middlewares: [strip-client-auth, authz, rate-limit]
+      priority: 1   # lowest: the more specific routers above win
+
+  middlewares:
+    authz:
+      forwardAuth:
+        address: "http://authz:8000/auth"
+        # Only these headers are copied from the auth response onto the
+        # upstream request. A header you forget to list here is a header the
+        # upstream never receives — and, worse, one the CLIENT's version of
+        # survives, if strip-client-auth did not remove it first.
+        authResponseHeaders:
+          - X-Auth-Subject
+          - X-Auth-Role
+          - X-Auth-Org
+          - X-Auth-Signature
+          - X-Auth-Source
+
+    strip-client-auth:
+      headers:
+        customRequestHeaders:
+          # Empty value = delete the header from the incoming request.
+          #
+          # This is the belt to forwardAuth's braces. authResponseHeaders
+          # overwrites the four names it lists; this deletes every name in the
+          # trusted namespace, including ones added later by someone who
+          # forgets to update the list above. Defence in depth means the second
+          # control still works when the first is edited by a stranger.
+          X-Auth-Subject: ""
+          X-Auth-Role: ""
+          X-Auth-Org: ""
+          X-Auth-Signature: ""
+          X-Auth-Source: ""
+          X-User-Id: ""
+
+    sse-headers:
+      headers:
+        customResponseHeaders:
+          Cache-Control: "no-cache, no-transform"
+          X-Accel-Buffering: "no"
+
+    rate-limit:
+      rateLimit:
+        average: 100
+        burst: 50
+        # Not applied to /feed: a rate limiter counts requests, and one SSE
+        # request is a thousand events. Limiting streams needs a concurrency
+        # cap, which is a different control — scenario 06.
+
+  services:
+    api:
+      loadBalancer:
+        servers:
+          - url: "http://api:8000"
+        # Traefik does not buffer responses by default, which is why SSE works
+        # through it out of the box. The nginx service in this lab is
+        # configured to buffer ON PURPOSE so scenario 05 has something to
+        # measure — that is not a Traefik-versus-nginx argument, it is a
+        # buffering-versus-streaming one.
+        passHostHeader: true

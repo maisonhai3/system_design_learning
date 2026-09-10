@@ -176,6 +176,15 @@ must not be lost. Knowledge in the layer that owns it, scheduling in the layer
 that has a scheduler. `app/usecases/update_role.py` and `app/api/routers.py`
 show the split.
 
+## The companion lab
+
+`../realtime_gateway_lab` reuses this lab's domain — the same Alice and Bob, the
+same datasets, the same one grant row — and asks the other half of the question.
+This lab is about what it costs to **cache** an authorization answer. That one is
+about what it costs to **push** one, and who is allowed to decide it: Redis
+Streams and SSE resume, fan-out on write, and a real Traefik + nginx gateway you
+can bypass on purpose.
+
 ## The interview questions this is built for
 
 **"You cache a user's permissions in Redis. Walk me through it."**

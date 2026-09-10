@@ -1,0 +1,52 @@
+# Static configuration: things Traefik reads once, at boot.
+#
+# Static vs dynamic is the distinction worth internalising. Entrypoints, the
+# providers themselves and the log level are static — changing them restarts
+# the proxy. Routers, middlewares and services are dynamic — changing them is
+# picked up live. If a change needs a restart, it belongs in this file, and if
+# it does not, putting it here costs you a restart you did not need.
+
+entryPoints:
+  web:
+    address: ":8080"
+    transport:
+      respondingTimeouts:
+        # 0 = no timeout on writing a response. THIS is the setting that decides
+        # whether SSE works: the default (0 in Traefik, but 60s in most proxies
+        # people migrate from) would kill a long-lived stream mid-flight.
+        # Scenario 05 is about how this fails when you get it wrong.
+        writeTimeout: 0
+        readTimeout: 0
+        idleTimeout: 180s
+  traefik:
+    # The dashboard gets its own entrypoint so it cannot be reached through the
+    # same port as real traffic. In a lab that is tidiness; in production it is
+    # the difference between an internal-only admin surface and a public one.
+    address: ":8081"
+
+api:
+  dashboard: true
+  insecure: true   # lab only: publishes the dashboard with no auth on :8081
+
+providers:
+  file:
+    # Routes as a file rather than as Docker labels, on purpose: this is the
+    # shape you review in a merge request, diff between environments, and can
+    # read without `docker inspect`. Labels are convenient; a file is auditable.
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+
+log:
+  level: INFO
+
+accessLog:
+  fields:
+    headers:
+      defaultMode: drop
+      names:
+        # Log what the gateway DECIDED, never the credential it decided from.
+        # An access log with Authorization in it is a credential store with
+        # log-level access control.
+        X-Auth-Subject: keep
+        X-Auth-Role: keep
+        Authorization: drop
