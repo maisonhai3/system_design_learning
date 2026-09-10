@@ -125,7 +125,12 @@ reset)
     # SCAN + DEL rather than FLUSHDB: the decision cache and the streams share
     # this database, and a scenario that flushed both would silently reset the
     # gateway's state in the middle of a proof.
-    redis-cli -u "$RURL" --scan --pattern 'feed:*' | xargs -r redis-cli -u "$RURL" del >/dev/null
+    # A read loop rather than `xargs -r`: -r is a GNU extension, and BSD xargs
+    # (macOS) runs the command once with no arguments on empty input instead of
+    # skipping it. Portable beats clever in a script people run on two OSes.
+    redis-cli -u "$RURL" --scan --pattern 'feed:*' | while read -r k; do
+        [ -n "$k" ] && redis-cli -u "$RURL" del "$k" >/dev/null
+    done
     bold "Reset: schema + seed re-applied, all feed streams deleted."
     ;;
 
