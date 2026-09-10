@@ -41,15 +41,30 @@ wait_ready() {
     # runs a temporary server with listen_addresses='' to apply schema/, and an
     # in-container check reports THAT server as ready while nothing is
     # listening on the published port yet.
-    local i pg=0 rd=0 gw=0
+    # Every endpoint a scenario actually talks to, not just the interesting
+    # ones. nginx used to be missing here, and the cost was real: when it
+    # failed to start, `up` said "Ready", and scenario 05 then reported that
+    # its anomaly had not reproduced — sending you to read about gzip when the
+    # answer was that a container was not running. A readiness check that
+    # omits a dependency does not save time, it moves the confusion downstream.
+    local i pg=0 rd=0 gw=0 ng=0 az=0 sg=0
     for i in $(seq 1 120); do
         psql "$DSN" -X -q -tAc 'SELECT 1' >/dev/null 2>&1 && pg=$(( pg + 1 )) || pg=0
         redis-cli -u "$RURL" ping >/dev/null 2>&1 && rd=$(( rd + 1 )) || rd=0
-        curl -sf -o /dev/null "$GW/healthz" && gw=$(( gw + 1 )) || gw=0
-        [ "$pg" -ge 2 ] && [ "$rd" -ge 2 ] && [ "$gw" -ge 2 ] && return 0
+        curl -sf -o /dev/null --max-time 3 "$GW/healthz"                && gw=$(( gw + 1 )) || gw=0
+        curl -sf -o /dev/null --max-time 3 "http://localhost:${NGINX_PORT}/healthz" && ng=$(( ng + 1 )) || ng=0
+        curl -sf -o /dev/null --max-time 3 "http://localhost:${AUTHZ_PORT}/health"  && az=$(( az + 1 )) || az=0
+        curl -sf -o /dev/null --max-time 3 "http://localhost:${API_SIGNED_PORT}/healthz" && sg=$(( sg + 1 )) || sg=0
+        if [ "$pg" -ge 2 ] && [ "$rd" -ge 2 ] && [ "$gw" -ge 2 ] \
+           && [ "$ng" -ge 2 ] && [ "$az" -ge 2 ] && [ "$sg" -ge 2 ]; then
+            return 0
+        fi
         sleep 1
     done
-    die "stack did not become ready in 120s. Check: ./lab.sh logs"
+    printf '\033[31m%s\033[0m\n' "Not ready after 120s. Who answered:" >&2
+    printf '  postgres:%s redis:%s traefik:%s nginx:%s authz:%s api-signed:%s\n' \
+        "$pg" "$rd" "$gw" "$ng" "$az" "$sg" >&2
+    die "Check the ones showing 0:  ./lab.sh logs <service>"
 }
 
 INSIGHT="http://localhost:${INSIGHT_PORT}"
@@ -175,6 +190,13 @@ up)
     else
         docker compose up -d --build
     fi
+    # Traefik and nginx read their config from bind mounts, and
+    # `docker compose up -d` has no idea a mounted FILE changed — it only
+    # recreates a container when the image or the service definition does. So
+    # after a `git pull` that touched gateway/, the old process keeps serving
+    # the old config, silently. Restarting them costs a second and removes an
+    # entire class of "it works on my machine".
+    docker compose restart traefik nginx >/dev/null 2>&1 || true
     wait_ready
     insight_setup
     bold "Ready."
@@ -251,16 +273,34 @@ run)
 
 run-all)
     need_uv
-    failed=()
+    failed=(); blocked=()
     for d in scenarios/*/; do
         n=$(basename "$d")
         [ -f "$d/run.py" ] || continue
         echo
         bold "════════ $n ════════"
-        if ! uv run --quiet "$d/run.py"; then failed+=("$n"); fi
+        # Capture the code explicitly rather than relying on $? after an
+        # AND-OR list: `set -e` makes that shape work by exemption rather than
+        # by intent, and a script people read should not depend on knowing
+        # which exemption applies.
+        code=0
+        uv run --quiet "$d/run.py" || code=$?
+        # Exit 3 means the scenario could not run here (a precondition was not
+        # met) — a different problem from a claim that stopped holding.
+        # Reporting them as one number is how a broken environment gets read
+        # as a broken system.
+        case "$code" in
+            0) ;;
+            3) blocked+=("$n") ;;
+            *) failed+=("$n") ;;
+        esac
     done
     echo
+    if [ ${#blocked[@]} -gt 0 ]; then
+        printf '\033[33m%s\033[0m\n' "COULD NOT RUN: ${blocked[*]}  (environment, not a failed claim)"
+    fi
     [ ${#failed[@]} -gt 0 ] && die "FAILED: ${failed[*]}"
+    [ ${#blocked[@]} -gt 0 ] && exit 3
     bold "All scenarios reproduced and all fixes held."
     ;;
 

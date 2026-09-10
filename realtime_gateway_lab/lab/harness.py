@@ -222,6 +222,8 @@ class SseSession:
         self.error: Exception | None = None
         self.opened_at: float | None = None
         self.first_frame_at: float | None = None
+        self.status_code: int | None = None
+        self.closed_at: float | None = None
         self._queue: queue.Queue[SseFrame] = queue.Queue()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -250,6 +252,7 @@ class SseSession:
             with self._client as client:
                 with client.stream("GET", self.url, headers=self._headers()) as response:
                     self.opened_at = time.monotonic()
+                    self.status_code = response.status_code
                     if self.trace:
                         emit(
                             self.name,
@@ -261,9 +264,11 @@ class SseSession:
                         self.error = RuntimeError(f"HTTP {response.status_code}")
                         return
                     self._consume(response)
-        except Exception as exc:  # noqa: BLE001 - surfaced via .error
+        except Exception as exc:  # noqa: BLE001 - surfaced via .error / .why_empty()
             if not self._stop.is_set():
                 self.error = exc
+        finally:
+            self.closed_at = time.monotonic()
 
     def _consume(self, response: httpx.Response) -> None:
         event, data_lines, event_id = "message", [], None
@@ -319,6 +324,34 @@ class SseSession:
                 pass
             got = [f for f in self.frames if event is None or f.event == event]
         return got
+
+    def why_empty(self) -> str:
+        """Why no frames arrived — the difference between a lab and a shrug.
+
+        "no event" is not a finding, it is the absence of one. It could be a
+        403 from the gateway, a proxy that is not running, a connection the
+        proxy closed, or a stream that was genuinely healthy and idle. Those
+        need four different fixes, so a measurement that cannot tell them
+        apart is a measurement that wastes your afternoon.
+        """
+        if self.error is not None:
+            return f"{type(self.error).__name__}: {str(self.error)[:70] or 'connection failed'}"
+        if self.status_code is None:
+            # No response headers at all. Two very different causes, and the
+            # thread tells them apart: still running means the socket is open
+            # and something upstream is withholding the response (a buffering
+            # or compressing proxy holds back even the headers); finished means
+            # the connection never came up.
+            if self._thread is not None and self._thread.is_alive():
+                return "no response headers at all — a proxy is withholding the whole response"
+            return "never connected — nothing listening, or the connection was refused"
+        if self.status_code >= 400:
+            return f"HTTP {self.status_code} — authentication or routing, not buffering"
+        if self.closed_at and self.opened_at and not self.frames:
+            return f"connected {self.status_code}, closed after {self.closed_at - self.opened_at:.1f}s with no frames"
+        if self.comments:
+            return f"connected {self.status_code}, {len(self.comments)} keep-alive(s), no events"
+        return f"connected {self.status_code}, nothing arrived at all"
 
     def data_frames(self) -> list[SseFrame]:
         """Everything except the connection's own housekeeping."""
@@ -480,6 +513,44 @@ class Lab:
     def held(self, condition, description: str, detail: str = "") -> bool:
         self._record(bool(condition), "FIX HELD", description, detail)
         return bool(condition)
+
+    def require(self, condition, description: str, detail: str = "") -> None:
+        """Assert something the scenario needs before it can measure anything.
+
+        Use it wherever the SHAPE of a remote response is about to be assumed —
+        `result["event_id"]`, `payload["datasets"]`. When the call actually
+        returned a 403, indexing it raises a KeyError, and a traceback is a
+        strictly worse bug report than a sentence: it points at the line that
+        read the value instead of the request that failed.
+
+        The rule this encodes: a measurement derived from a remote call must
+        handle that call having failed. Locally-computed values do not need
+        this; anything that crossed a network does.
+        """
+        if not condition:
+            self.precondition_failed(description, detail)
+
+    def precondition_failed(self, description: str, detail: str = "") -> None:
+        """The lab cannot run here, and that is not the same as a claim failing.
+
+        Exit code 3, distinct from 1 (a claim did not hold) and 2 (the stack is
+        not up), so `run-all` and CI can tell "your environment is wrong" from
+        "your system is wrong". Conflating those two is how a broken
+        environment gets read as a broken fix — you go looking at the code
+        while the actual answer is that a container is not running.
+        """
+        print()
+        print(YELLOW(BOLD(f"  ⚠ CANNOT RUN: {description}")))
+        if detail:
+            for line in textwrap.dedent(detail).strip("\n").splitlines():
+                print(DIM(f"      {line}"))
+        for stream in self._streams:
+            stream.close()
+        for actor in self._actors:
+            actor.close()
+        print()
+        print(YELLOW(BOLD(f"┗━ {self.title}: precondition not met; no claims were tested")))
+        sys.exit(3)
 
     def takeaway(self, text: str) -> None:
         print()

@@ -173,6 +173,17 @@ lab.note(
 reset()
 publisher = lab.actor("admin", "alice")
 result = publisher.json("POST", f"/events/{PAYROLL}?mode=fanout")
+lab.require(
+    "delivered_to" in result,
+    "the publish endpoint did not accept the event, so there is nothing to fan out",
+    f"""
+    The API returned: {result}
+
+    Everything below measures the RESULT of a publish, so none of it can be
+    read until this works. Check ./lab.sh as alice /whoami — a 401 or 403 here
+    is authentication or the gateway's RBAC table, not fan-out.
+    """,
+)
 
 alice_stream = stream_contents("feed:v1:stream:user:1")
 bob_stream = stream_contents("feed:v1:stream:user:2")
@@ -321,6 +332,11 @@ with db() as conn:
 
 full = publisher.json("POST", "/events/12?mode=fanout")   # public dataset: everyone
 pointer = publisher.json("POST", "/events/12?mode=pointer")
+lab.require(
+    full.get("bytes_written") and pointer.get("bytes_written"),
+    "one of the two publishes reported no bytes written, so the ratio is meaningless",
+    f"fanout: {full}\n\npointer: {pointer}",
+)
 audience = len(full["delivered_to"])
 
 lab.measure("audience:", f"{audience} subscribers")

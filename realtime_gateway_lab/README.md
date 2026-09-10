@@ -167,6 +167,41 @@ grep -rn "fastapi\|sqlalchemy\|redis" app/domain app/usecases --include='*.py'
 Docstring mentions only, no imports. `app/main.py` and `app/api/` are allowed to
 know about FastAPI; nothing below them is.
 
+## When a scenario cannot run
+
+Three exit codes, because they need three different responses:
+
+| exit | means | what to do |
+|---|---|---|
+| 0 | every claim held | nothing |
+| 1 | a claim stopped holding | read the trace; the system changed |
+| 2 | the stack is not up | `./lab.sh up` |
+| 3 | **a precondition failed** | your environment; the message names what to check |
+
+Exit 3 exists because conflating "your environment is wrong" with "your system
+is wrong" wastes an afternoon. Scenario 05 compares two requests through nginx
+that differ only in `Accept-Encoding`; if the control request also fails, the
+comparison is meaningless, and reporting *"the anomaly did not reproduce"* would
+send you reading about gzip when a container is not running. So it stops, says
+`⚠ CANNOT RUN`, and prints the reason it actually got — `ConnectError: Connection
+refused`, `HTTP 403`, `no response headers at all`.
+
+Two things this lab learned the hard way and now does everywhere:
+
+- **A measurement is a value *or* a reason, never a bare `None`.** Formatting a
+  missing number is how scenario 05 once died with `unsupported format string
+  passed to NoneType.__format__` — a traceback pointing at the line that read
+  the value instead of the request that failed.
+- **`./lab.sh up` waits for every service a scenario talks to**, and names the
+  ones that did not answer. nginx used to be missing from that check, so a
+  container that died on a config error still printed "Ready".
+
+And one that is not about this lab at all: **`docker compose up -d` does not
+know a bind-mounted file changed.** Traefik and nginx read their config from
+mounts, so after a `git pull` that touched `gateway/`, the old process keeps
+serving the old config — silently, because the image and the service definition
+are unchanged. `./lab.sh up` now restarts both proxies for exactly that reason.
+
 ## On proving this kind of thing
 
 Two failures here cannot be asserted about a single request, and the harness is

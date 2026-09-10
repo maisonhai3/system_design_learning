@@ -87,6 +87,16 @@ lab.note(
 views = {}
 for actor in (alice, bob, dan, carol):
     payload = actor.json("GET", "/datasets")
+    lab.require(
+        "datasets" in payload,
+        f"GET /datasets did not return a dataset list for {actor.name}",
+        f"""
+        The API returned: {payload}
+
+        This is the ABAC read the whole scenario compares. A 401 or 403 here is
+        the gateway or the token, not row filtering.
+        """,
+    )
     views[actor.name] = [d["id"] for d in payload["datasets"]]
     lab.measure(f"{actor.name} sees:", str(views[actor.name]))
 

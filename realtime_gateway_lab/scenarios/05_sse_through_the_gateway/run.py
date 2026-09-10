@@ -4,9 +4,11 @@
 # ///
 """Scenario 05 — everything that breaks SSE breaks in the proxy, not your code."""
 
+import os
 import pathlib
 import sys
 import time
+from dataclasses import dataclass
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
@@ -24,16 +26,43 @@ reset()
 publisher = lab.actor("admin", "alice")
 
 
-def time_to_first_event(url: str, label: str, headers: dict | None = None, wait: float = 12.0):
+@dataclass
+class Probe:
+    """A time-to-first-event measurement, or the reason there wasn't one.
+
+    Returning a value-or-None and formatting it later is how this scenario
+    crashed with `unsupported format string passed to NoneType.__format__` —
+    a traceback that hides the actual problem, which was that nothing was
+    reaching nginx at all. So the measurement carries its own rendering and
+    its own explanation, and there is no code path that formats a missing
+    number.
+    """
+
+    seconds: float | None
+    reason: str = ""
+
+    @property
+    def arrived(self) -> bool:
+        return self.seconds is not None
+
+    def __str__(self) -> str:
+        return f"{self.seconds:.2f}s" if self.arrived else f"no event — {self.reason}"
+
+
+def time_to_first_event(url: str, label: str, headers: dict | None = None, wait: float = 12.0) -> Probe:
     """Open a stream, publish into it, and time the first frame that arrives."""
     stream = lab.stream(label, url, token=ALICE, headers=headers, trace=False).open()
     time.sleep(0.6)  # let the connection establish and park in XREAD BLOCK
     started = time.monotonic()
     publisher.request("POST", f"/events/{PUBLIC}?mode=fanout")
     frames = stream.wait_for(1, timeout=wait, event="dataset.processed")
-    elapsed = (time.monotonic() - started) if frames else None
+    probe = (
+        Probe(time.monotonic() - started)
+        if frames
+        else Probe(None, stream.why_empty())
+    )
     stream.disconnect()
-    return elapsed
+    return probe
 
 
 # ---------------------------------------------------------------------------
@@ -60,11 +89,40 @@ gzipped = time_to_first_event(
     headers={"Accept-Encoding": "gzip"},
 )
 
-lab.measure("Accept-Encoding: identity →", f"{plain:.2f}s" if plain else "no event")
-lab.measure("Accept-Encoding: gzip     →", f"{gzipped:.2f}s" if gzipped else "NO EVENT AT ALL")
+lab.measure("Accept-Encoding: identity →", str(plain))
+lab.measure("Accept-Encoding: gzip     →", str(gzipped))
+
+# The identity request is the CONTROL. If it fails, the comparison below is
+# meaningless — and reporting "the anomaly did not reproduce" would send you
+# looking at gzip when the real problem is that nginx is not serving at all.
+# A precondition that fails is a different kind of failure and deserves to say
+# so, loudly, once, with the things to check.
+if not plain.arrived:
+    lab.precondition_failed(
+        "nginx is not delivering this stream at all, so there is nothing to compare",
+        f"""
+        The control request — the one WITHOUT gzip — got: {plain.reason}
+
+        This scenario compares two requests through nginx that differ only in
+        Accept-Encoding. Both failed, so the difference cannot be measured.
+        Nothing here is about buffering yet. Check, in this order:
+
+          ./lab.sh logs nginx           is it running, or did it exit on a
+                                        config error? `up` does not wait for
+                                        nginx, so a dead one is quiet.
+          curl -i localhost:{os.environ.get('NGINX_PORT', '8092')}/buffered/whoami \
+               -H "Authorization: Bearer $(./lab.sh token alice)"
+                                        401/403 means auth_request, not buffering.
+          docker compose restart nginx  nginx reads its config once, at start.
+                                        A bind-mounted config you pulled after
+                                        the container was created is NOT loaded
+                                        until the process restarts, and
+                                        `docker compose up -d` cannot tell.
+        """,
+    )
 
 lab.broke(
-    plain is not None and gzipped is None,
+    plain.arrived and not gzipped.arrived,
     "the same endpoint delivers instantly to curl and never to a gzip-capable client",
     """
     The compressor works in blocks. It will not emit anything until it has
@@ -89,11 +147,11 @@ rescued = time_to_first_event(
     "accel-no",
     headers={"Accept-Encoding": "gzip"},
 )
-lab.measure("with X-Accel-Buffering: no →", f"{rescued:.2f}s" if rescued else "no event")
+lab.measure("with X-Accel-Buffering: no →", str(rescued))
 
 lab.held(
-    rescued is not None and rescued < 2.0,
-    f"the same location now delivers in {rescued:.2f}s, with no nginx change at all",
+    rescued.arrived and rescued.seconds < 2.0,
+    f"the same location now delivers in {rescued}, with no nginx change at all",
     """
     Two response headers do this, and they are worth sending from every
     streaming endpoint you write:
@@ -117,11 +175,11 @@ streamed = time_to_first_event(
 )
 traefik = time_to_first_event(f"{GATEWAY}/feed?block_ms=1000", "traefik")
 
-lab.measure("nginx /streamed/ (buffering off) →", f"{streamed:.2f}s" if streamed else "no event")
-lab.measure("traefik (no buffering by default) →", f"{traefik:.2f}s" if traefik else "no event")
+lab.measure("nginx /streamed/ (buffering off) →", str(streamed))
+lab.measure("traefik (no buffering by default) →", str(traefik))
 
 lab.held(
-    streamed is not None and traefik is not None,
+    streamed.arrived and traefik.arrived,
     "fixing the proxy works too — and note Traefik needed no fix",
     """
     Traefik does not buffer responses, so SSE works through it out of the box.
@@ -156,11 +214,13 @@ closed_after = idle.wait_closed(timeout=20)
 
 lab.measure("keep-alive interval:", "10s")
 lab.measure("proxy_read_timeout:", "5s")
-lab.measure("connection survived:", f"{closed_after:.1f}s" if closed_after else ">20s")
+lab.measure("connection survived:", f"{closed_after:.1f}s" if closed_after else ">20s (never closed)")
 
 lab.broke(
     closed_after is not None and closed_after < 8,
-    f"the proxy closed the stream after {closed_after:.1f}s of quiet",
+    f"the proxy closed the stream after {closed_after:.1f}s of quiet"
+    if closed_after is not None
+    else "the proxy did NOT close the idle stream (expected it to, at 5s)",
     """
     The client will reconnect — that is what `retry:` is for — so the symptom
     is not an outage. It is a reconnect every five seconds, per user, forever:
