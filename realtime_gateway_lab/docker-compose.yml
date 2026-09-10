@@ -129,6 +129,48 @@ services:
       - api
       - authz
 
+  # The GUI. Not decoration: a stream is the one Redis type that is genuinely
+  # hard to reason about from redis-cli, because you are reading a log of
+  # entries whose ids are also cursors, and the interesting question is usually
+  # "what is in WHOSE mailbox" — which is a shape, not a value.
+  #
+  # It also pays off the key-naming convention: RedisInsight splits keys on ":"
+  # and renders them as a tree, so `feed:v1:stream:user:1` becomes a folder
+  # path you can browse. That is the concrete reward for the naming discipline
+  # in redis_cache_lab's scenario 04, and it is much easier to believe once you
+  # have seen the tree.
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: rtgw_insight
+    ports:
+      # 8097 keeps this lab's ports contiguous; the container itself listens on
+      # 5540, which is RedisInsight 2.x's own default (older docs say 8001).
+      - "${INSIGHT_PORT:-8097}:5540"
+    # No RI_PRE_SETUP_DATABASES_PATH / RI_REDIS_HOST here, deliberately.
+    #
+    # This image documents both as ways to pre-seed a connection. Testing them:
+    # on a fresh volume, with the file mounted, GET /api/databases stayed empty
+    # for four minutes. It did register once, on a volume that had been through
+    # a container recreate — so the feature evidently works under conditions I
+    # could not pin down and cannot rely on.
+    #
+    # So the lab registers the connection itself, through RedisInsight's own
+    # REST API, from gateway/redisinsight/databases.json — see insight_setup()
+    # in lab.sh. One mechanism instead of two: a mechanism that fires
+    # unpredictably a minute later would either look broken or race the
+    # explicit one and leave two entries for the same server.
+    #
+    # The general shape of that call is worth keeping: when a convenience
+    # feature's behaviour cannot be characterised, do not layer your own on top
+    # of it. Replace it.
+    volumes:
+      # Named volume so the accepted-terms flag and any Workbench queries you
+      # save survive a restart. `./lab.sh down` removes it with everything else.
+      - insight:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
   nginx:
     image: nginx:1.27-alpine
     container_name: rtgw_nginx
@@ -141,4 +183,5 @@ services:
     depends_on:
       - api
 
-volumes: {}
+volumes:
+  insight: {}
