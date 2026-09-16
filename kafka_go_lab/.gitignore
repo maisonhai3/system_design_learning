@@ -1,0 +1,9 @@
+# Compiled service binaries
+bin/
+
+# Per-run service output, written by lab.sh and the scenarios
+logs/
+
+# The payment service's durable ledger and idempotency table. Real state, but
+# local to your machine — see scenarios/04_duplicates for why it is on disk.
+state/

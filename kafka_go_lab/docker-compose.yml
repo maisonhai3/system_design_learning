@@ -1,0 +1,81 @@
+# One Kafka broker, no ZooKeeper.
+#
+# Kafka 4.x runs in KRaft mode: the broker also runs the controller that used
+# to need a separate ZooKeeper ensemble. If you find a tutorial with a
+# zookeeper service in it, it predates this and you can skip that half.
+#
+# Only Kafka runs in Docker. The Go services run on your machine, because this
+# lab is about killing them, starting three copies of one, and restarting them
+# with different flags — all of which is a keystroke with `go run` and an image
+# rebuild in Docker.
+services:
+  kafka:
+    image: apache/kafka:4.1.2
+    container_name: kafka-go-lab
+    ports:
+      - "9092:9092"
+    environment:
+      # A single node that is both broker and controller.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      CLUSTER_ID: ODl-pDR-Qhyk9qDUJ9kJjA
+
+      # Two ways in. Your Go services connect from the host via localhost:9092;
+      # anything running inside this compose network (like the optional UI)
+      # uses kafka:29092. Getting this wrong is the single most common Kafka
+      # in Docker problem: the broker hands clients the address it *advertises*,
+      # so a client that connects fine on 9092 can still fail on the next call
+      # when it is told to go talk to a hostname it cannot resolve.
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+
+      # One broker means one copy of everything. In production these are 3,
+      # and they are what stands between you and a dead disk.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      # Default is 3000ms: the coordinator waits that long before completing a
+      # rebalance, hoping more consumers turn up. Sensible in production, an
+      # eternity when you are watching a terminal.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+      # Make a typo in a topic name fail loudly instead of silently creating a
+      # single-partition topic that breaks the ordering you were counting on.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  # Optional web UI: topics, partitions, records, consumer groups and their lag,
+  # all clickable. Start it with:  docker compose --profile ui up -d
+  #
+  # Worth a look once, then worth closing. Everything it shows, `./lab.sh lag`
+  # and `./lab.sh dump` compute from the same two admin calls — and knowing
+  # which calls those are is what lets you debug a cluster you have no UI for.
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: kafka-go-lab-ui
+    profiles: ["ui"]
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: kafka-go-lab
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+volumes:
+  kafka-data:
