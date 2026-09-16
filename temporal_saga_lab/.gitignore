@@ -1,0 +1,12 @@
+# Build output and runtime state. Everything here is reproducible with
+# `./lab.sh up` or `./lab.sh local-up`.
+/bin/
+/data/
+/.lab/
+*.db
+*.db-wal
+*.db-shm
+
+# testdata/order_history.json is NOT ignored on purpose: it is a real recorded
+# history and the tests replay it. Re-record it with
+#   go run ./scenarios/05_determinism -save testdata/order_history.json
