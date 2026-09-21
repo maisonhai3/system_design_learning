@@ -1,0 +1,146 @@
+name: temporal-saga-lab
+
+services:
+  # The Temporal server. `start-dev` is the whole cluster — frontend, history,
+  # matching, worker and the Web UI — in one process.
+  #
+  # It keeps history IN MEMORY. No scenario restarts this container, so nothing
+  # here depends on that, but it is worth knowing what you are looking at: the
+  # durability this lab demonstrates is the durability of a database, and in a
+  # real deployment that database is Postgres or Cassandra and is the thing you
+  # back up. A dev server is a teaching aid, not a small production cluster.
+  temporal:
+    image: temporalio/temporal:latest
+    container_name: tsl_temporal
+    # entrypoint is set explicitly rather than relying on the image's default,
+    # so this keeps working if that default ever changes.
+    entrypoint: ["temporal"]
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--ui-ip", "0.0.0.0", "--log-level", "warn"]
+    ports:
+      - "${TEMPORAL_PORT:-7233}:7233"   # gRPC: workers and clients
+      - "${TEMPORAL_UI_PORT:-8233}:8233" # the Web UI — open this one
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # ---------------------------------------------------------------------------
+  # Three services, three databases, and no way to join across them.
+  #
+  # Each gets its OWN volume. That is the point of the exercise: the moment
+  # payments and inventory share a database, the correct answer to this whole
+  # problem is one transaction, and every saga below is elaborate nonsense.
+
+  payments:
+    build: .
+    image: temporal-saga-lab
+    container_name: tsl_payments
+    command: ["payments"]
+    environment:
+      LAB_PORT: "8111"
+      LAB_DB: "/data/payments.db"
+    ports:
+      - "${PAYMENTS_PORT:-8111}:8111"
+    volumes:
+      - payments_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8111/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  inventory:
+    build: .
+    image: temporal-saga-lab
+    container_name: tsl_inventory
+    command: ["inventory"]
+    environment:
+      LAB_PORT: "8112"
+      LAB_DB: "/data/inventory.db"
+    ports:
+      - "${INVENTORY_PORT:-8112}:8112"
+    volumes:
+      - inventory_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8112/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  shipping:
+    build: .
+    image: temporal-saga-lab
+    container_name: tsl_shipping
+    command: ["shipping"]
+    environment:
+      LAB_PORT: "8113"
+      LAB_DB: "/data/shipping.db"
+    ports:
+      - "${SHIPPING_PORT:-8113}:8113"
+    volumes:
+      - shipping_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8113/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # The front door. It holds the naive orchestrator's in-memory state, which is
+  # why scenario 01 kills THIS container to lose a naive order.
+  orders:
+    build: .
+    image: temporal-saga-lab
+    container_name: tsl_orders
+    command: ["orders"]
+    environment:
+      LAB_PORT: "8110"
+      LAB_TEMPORAL: "temporal:7233"
+      LAB_PAYMENTS_URL: "http://payments:8111"
+      LAB_INVENTORY_URL: "http://inventory:8112"
+      LAB_SHIPPING_URL: "http://shipping:8113"
+    ports:
+      - "${ORDERS_PORT:-8110}:8110"
+    # restart: no — a scenario that kills this container decides when it comes
+    # back. Docker restarting it helpfully would race the assertions.
+    restart: "no"
+    depends_on:
+      temporal: {condition: service_healthy}
+      payments: {condition: service_healthy}
+      inventory: {condition: service_healthy}
+      shipping: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8110/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # The worker. Stateless, and the only thing here that runs workflow code.
+  #
+  # Scale it with `docker compose up -d --scale worker=3` and nothing changes
+  # except how fast orders move — which is the clearest demonstration there is
+  # that the workflow's state was never in the worker.
+  worker:
+    build: .
+    image: temporal-saga-lab
+    container_name: tsl_worker
+    command: ["worker"]
+    environment:
+      LAB_TEMPORAL: "temporal:7233"
+      LAB_PAYMENTS_URL: "http://payments:8111"
+      LAB_INVENTORY_URL: "http://inventory:8112"
+      LAB_SHIPPING_URL: "http://shipping:8113"
+      # The default idempotency strategy. Individual orders override it —
+      # see scenario 02.
+      LAB_IDEMPOTENCY: "${LAB_IDEMPOTENCY:-stable}"
+    restart: "no"
+    depends_on:
+      temporal: {condition: service_healthy}
+      payments: {condition: service_healthy}
+      inventory: {condition: service_healthy}
+      shipping: {condition: service_healthy}
+
+volumes:
+  payments_data: {}
+  inventory_data: {}
+  shipping_data: {}
