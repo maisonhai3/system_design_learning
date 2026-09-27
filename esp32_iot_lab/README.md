@@ -23,6 +23,21 @@ bước sau, để khi có lỗi bạn biết ngay nó nằm ở đâu.
 2. Cắm ESP32 vào máy bằng cáp đi kèm. Nếu máy không nhận cổng COM, cài driver
    **CP210x** hoặc **CH340**: xem tên chip nhỏ nằm cạnh cổng USB trên board.
 
+### Trên Ubuntu (không cần cài driver)
+
+Driver CP210x/CH340 đã có sẵn trong kernel Linux. Chỉ cần cấp quyền truy cập cổng serial:
+
+```bash
+pip install platformio                     # hoặc dùng extension PlatformIO trong VS Code
+sudo usermod -aG dialout $USER             # quyền đọc/ghi /dev/ttyUSB*, cần đăng xuất rồi đăng nhập lại
+curl -fsSL https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/assets/system/99-platformio-udev.rules \
+  | sudo tee /etc/udev/rules.d/99-platformio-udev.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo apt remove brltty                     # Ubuntu 22.04+: brltty chiếm mất cổng của chip CH340
+```
+
+Kiểm tra: cắm board rồi chạy `ls /dev/ttyUSB*`. Phải thấy `/dev/ttyUSB0`.
+
 ## Chạy một bước
 
 ```bash
